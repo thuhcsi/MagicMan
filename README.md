@@ -163,6 +163,12 @@ python inference.py --config configs/inference/inference-{version}.yaml --input_
 python inference.py --config configs/inference/inference-base.yaml --input_path examples/001.jpg --output_path examples/001 --seed 42 --device cuda:0
 ```
 
+## 🙏 Acknowledgments
+
+Our code follows several excellent repositories. We appreciate them for making their codes available to the public.
+* [Moore-AnimateAnyone](https://github.com/MooreThreads/Moore-AnimateAnyone).
+* [ECON](https://github.com/YuliangXiu/ECON).
+* [HumanGaussian](https://github.com/alvinliu0/HumanGaussian). Thanks to the authors of HumanGaussian for additional advice and help!
 
 ## ✏️ Citing
 If you find our work useful, please consider citing:
