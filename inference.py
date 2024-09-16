@@ -184,9 +184,8 @@ def init_camera(num_views):
 
 def init_ref_normal(rgb_pil, mask_pil, method="marigold", device="cuda:0"):
     if method == "marigold":
-        # TODO: modify the marigold ckpt path
         pipe = MarigoldNormalsPipeline.from_pretrained(
-            "/apdcephfs_cq10/share_1330077/hexu/NVS/pretrained_weights/marigold-normals-v0-1", # "prs-eth/marigold-normals-v0-1"
+            "prs-eth/marigold-normals-v0-1",
             variant="fp16", 
             torch_dtype=torch.float16
         ).to(device)
