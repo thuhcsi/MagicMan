@@ -63,7 +63,7 @@
 
 |Model        | Resolution|#Views    |GPU Memery<br>(w/ refinement)|#Training Scans|Datasets|
 |:-----------:|:---------:|:--------:|:--------:|:--------:|:--------:|
-|magicman_base|512x512    |20        |23.5GB    |~2500|[THuman2.1](https://github.com/ytrock/THuman2.0-Dataset), [CustomHumans](https://github.com/custom-humans/editable-humans)|
+|magicman_base|512x512    |20        |23.5GB    |~2500|[THuman2.1](https://github.com/ytrock/THuman2.0-Dataset)|
 |magicman_plus|512x512    |24        |26.5GB    |~5500|[THuman2.1](https://github.com/ytrock/THuman2.0-Dataset), [CustomHumans](https://github.com/custom-humans/editable-humans), [2K2K](https://github.com/SangHunHan92/2K2K), [CityuHuman](https://github.com/yztang4/HaP)|
 
 Currently, we provide two versions of models: a base model trained on ~2500 scans to generate 20 views and an enhanced model trained on ~5500 scans to generate 24 views. 
