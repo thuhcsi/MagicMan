@@ -27,6 +27,8 @@ import time
 import argparse
 import face_recognition
 from scipy.spatial import Delaunay
+import cv2
+
 
 class Inference:
     def __init__(self, args, config):
@@ -248,9 +250,12 @@ class Inference:
         self.losses['joint']['value'] = diff_J.mean(dim=1)
 
         # Add identity loss
-        ref_embedding = self.extract_face_embedding(np.array(self.ref_rgb_pil))
-        identity_loss = self.identity_consistency_loss(self.rgb_video[0, :, 0].cpu().numpy(), ref_embedding)
-        self.losses['identity'] = {'value': torch.tensor(identity_loss, device=self.device), 'weight': 10.0}
+        if not hasattr(self, 'ref_embedding'):
+            self.ref_embedding = self.extract_face_embedding(np.array(self.ref_rgb_pil))
+        
+        identity_loss = self.identity_consistency_loss(self.rgb_video[0, :, 0], self.ref_embedding)
+        self.losses['identity'] = {'value': torch.tensor(identity_loss, device=self.device), 'weight': self.config.identity_weight}
+
 
         
     def calculate_total_loss(self):
@@ -351,7 +356,7 @@ class Inference:
         save_image_seq(self.cond_semantics.unsqueeze(0).permute(0,2,1,3,4), os.path.join(output_path, "smplx_semantic"))
         save_image_seq(self.cond_masks.unsqueeze(0).unsqueeze(0), os.path.join(output_path, "smplx_mask"))
 
-      def run(self):
+    def run(self):
         self.prepare_reference_image()
         self.initialize_nvs()
         
@@ -475,15 +480,35 @@ class Inference:
         return torch.tensor(new_verts, device=self.device), torch.tensor(new_faces, device=self.device)
 
     def extract_face_embedding(self, image):
+        # Ensure the image is in the correct format (8-bit RGB)
+        if isinstance(image, np.ndarray):
+            if image.dtype != np.uint8:
+                image = (image * 255).astype(np.uint8)
+            if image.ndim == 2:  # Grayscale
+                image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+            elif image.ndim == 3 and image.shape[2] > 3:  # More than 3 channels
+                image = image[:, :, :3]
+        elif isinstance(image, Image.Image):
+            image = np.array(image.convert('RGB'))
+        
         face_locations = face_recognition.face_locations(image)
         face_encodings = face_recognition.face_encodings(image, face_locations)
         return face_encodings[0] if face_encodings else None
 
     def identity_consistency_loss(self, generated_image, ref_embedding):
+        # Convert tensor to numpy array and ensure it's in the correct format
+        if torch.is_tensor(generated_image):
+            generated_image = generated_image.cpu().numpy()
+        
+        # Ensure the image is in the correct shape (H, W, C)
+        if generated_image.shape[0] == 3:  # If in (C, H, W) format
+            generated_image = np.transpose(generated_image, (1, 2, 0))
+        
         gen_embedding = self.extract_face_embedding(generated_image)
-        if gen_embedding is not None:
+        if gen_embedding is not None and ref_embedding is not None:
             return np.linalg.norm(gen_embedding - ref_embedding)
         return 0
+
 
     def adaptive_refinement(self, nvs_data, max_iterations=4, threshold=1e-4):
         prev_loss = float('inf')
@@ -540,8 +565,8 @@ def parse_args():
     parser.add_argument("-H", type=int, default=512)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cuda:0")
-    parser.add_argument("--input_path", type=str, default="examples/001.jpg")
-    parser.add_argument("--output_path", type=str, default="examples/001")
+    parser.add_argument("--input_path", type=str, default="examples/image_0.png")
+    parser.add_argument("--output_path", type=str, default="examples/image_0")
     args = parser.parse_args()
 
     return args
