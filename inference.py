@@ -28,7 +28,7 @@ import argparse
 import face_recognition
 from scipy.spatial import Delaunay
 import cv2
-
+from FaceProcess import FaceProcessor
 
 class Inference:
     def __init__(self, args, config):
@@ -74,6 +74,9 @@ class Inference:
         self.scheduler = DDIMScheduler(**sched_kwargs)
         
         self.generator = torch.Generator(device=device).manual_seed(self.args.seed)
+
+
+        self.fp = FaceProcessor()
         
         # Load pretrained weights
         ckpt_path = config.ckpt_path
@@ -251,10 +254,10 @@ class Inference:
 
         # Add identity loss
         if not hasattr(self, 'ref_embedding'):
-            self.ref_embedding = self.extract_face_embedding(np.array(self.ref_rgb_pil))
+            self.ref_embedding = self.fp.extract_face_embedding(np.array(self.ref_rgb_pil))
         
         if self.ref_embedding is not None:
-            identity_loss = self.identity_consistency_loss(self.rgb_video[0, :, 0], self.ref_embedding)
+            identity_loss = self.fp.identity_consistency_loss(self.rgb_video[0, :, 0], self.ref_embedding)
             self.losses['identity'] = {'value': torch.tensor(identity_loss, device=self.device), 'weight': self.config.identity_weight}
         else:
             self.losses['identity'] = {'value': torch.tensor(0.0, device=self.device), 'weight': 0.0}
@@ -481,44 +484,7 @@ class Inference:
         
         return torch.tensor(new_verts, device=self.device), torch.tensor(new_faces, device=self.device)
 
-    def extract_face_embedding(self, image):
-        # Ensure the image is in the correct format (8-bit RGB)
-        if isinstance(image, np.ndarray):
-            if image.dtype != np.uint8:
-                image = (image * 255).astype(np.uint8)
-            if image.ndim == 2:  # Grayscale
-                image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
-            elif image.ndim == 3:
-                if image.shape[2] > 3:  # More than 3 channels
-                    image = image[:, :, :3]
-                elif image.shape[2] == 1:  # Single channel
-                    image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
-        elif isinstance(image, Image.Image):
-            image = np.array(image.convert('RGB'))
-        
-        # Ensure the image is in HWC format
-        if image.shape[0] == 3 and image.ndim == 3:
-            image = np.transpose(image, (1, 2, 0))
-        
-        face_locations = face_recognition.face_locations(image)
-        if not face_locations:
-            return None
-        face_encodings = face_recognition.face_encodings(image, face_locations)
-        return face_encodings[0] if face_encodings else None
-
-    def identity_consistency_loss(self, generated_image, ref_embedding):
-        # Convert tensor to numpy array and ensure it's in the correct format
-        if torch.is_tensor(generated_image):
-            generated_image = generated_image.cpu().numpy()
-        
-        # Ensure the image is in the correct shape (H, W, C)
-        if generated_image.shape[0] == 3:  # If in (C, H, W) format
-            generated_image = np.transpose(generated_image, (1, 2, 0))
-        
-        gen_embedding = self.extract_face_embedding(generated_image)
-        if gen_embedding is not None and ref_embedding is not None:
-            return np.linalg.norm(gen_embedding - ref_embedding)
-        return 0
+    
 
     def adaptive_refinement(self, nvs_data, max_iterations=4, threshold=1e-4):
         prev_loss = float('inf')
