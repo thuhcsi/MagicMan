@@ -29,6 +29,9 @@ import face_recognition
 from scipy.spatial import Delaunay
 import cv2
 from FaceProcess import FaceProcessor
+from normalmap_vis import Config, ModelManager, ImageProcessor
+
+
 
 class Inference:
     def __init__(self, args, config):
@@ -85,6 +88,10 @@ class Inference:
         self.semantic_guider.load_state_dict(torch.load(os.path.join(ckpt_path, "semantic_guider.pth"), map_location="cpu"))
         self.normal_guider.load_state_dict(torch.load(os.path.join(ckpt_path, "normal_guider.pth"), map_location="cpu"))
         
+
+        self.normal_model = ModelManager.load_model(Config.CHECKPOINTS["1b"])
+        self.seg_model = ModelManager.load_model(Config.SEG_CHECKPOINTS["fg-bg-1b"], is_seg_model=True)
+  
     def init_pipeline(self):
         self.pipe = MagicManPipeline(
             vae=self.vae,
@@ -140,27 +147,17 @@ class Inference:
         self.ref_mask_pil.save(os.path.join(output_path, "ref_mask.png"))
         self.ref_normal_pil.save(os.path.join(output_path, "ref_normal.png"))
         
-    def init_ref_normal(self, rgb_pil, mask_pil, method="marigold"):
-        if method == "marigold":
-            pipe = MarigoldNormalsPipeline.from_pretrained(
-                "prs-eth/marigold-normals-v0-1",
-                variant="fp16",
-                torch_dtype=torch.float16
-            ).to(self.device)
-            normal_np = pipe(rgb_pil, num_inference_steps=25).prediction
-            mask_np = np.array(mask_pil)[None,:,:,None]
-            
-            normal_np = self.normalize_normal_map(normal_np)
-            normal_np = normal_np * (mask_np > 0)
-            normal_pil = Image.fromarray((normal_np[0] * 255).astype(np.uint8)).convert("RGB")
-            
-            del pipe
-            torch.cuda.empty_cache()
-            
-            return normal_pil
-        else:
-            raise NotImplementedError(f"Method {method} not implemented for reference normal initialization")
-        
+    # use sapiens - normal  facebook https://about.meta.com/realitylabs/codecavatars/sapiens/
+    def init_ref_normal(self, rgb_pil, mask_pil):
+        processor = ImageProcessor()
+        normal_map = processor.process_image(
+            self.args.input_path,
+            normal_model_name="1b",
+            seg_model_name="fg-bg-1b"  
+        )
+        normal_map_vis = processor.visualize_normal_map(normal_map)
+        return Image.fromarray(normal_map_vis)
+
     @staticmethod
     def normalize_normal_map(normal_np):
         norms = np.linalg.norm(normal_np, axis=-1, keepdims=True)
@@ -284,10 +281,19 @@ class Inference:
             self.cond_normals, self.cond_masks = self.smpl_renderer.render_normal_screen_space(bg="black", return_mask=True)
             self.cond_semantics = self.smpl_renderer.render_semantic(bg="black")
         
-        cond_normal_list = [Image.fromarray((cond_normal.detach().cpu().numpy() * 255).astype(np.uint8).transpose(1,2,0)) 
-                            for cond_normal in self.cond_normals]
+        processor = ImageProcessor()
+        cond_normal_list = []
+        for cond_normal in self.cond_normals:
+            normal_map = processor.process_image(
+                Image.fromarray((cond_normal.detach().cpu().numpy() * 255).astype(np.uint8).transpose(1,2,0)),
+                normal_model_name="1b",
+                seg_model_name="fg-bg-1b"
+            )
+            normal_map_vis = processor.visualize_normal_map(normal_map)
+            cond_normal_list.append(Image.fromarray(normal_map_vis))
+        
         cond_semantic_list = [Image.fromarray((cond_semantic.detach().cpu().numpy() * 255).astype(np.uint8).transpose(1,2,0)) 
-                              for cond_semantic in self.cond_semantics]
+                            for cond_semantic in self.cond_semantics]
         
         self.output = self.pipe(
             self.ref_rgb_pil,
@@ -424,9 +430,20 @@ class Inference:
 
 
     def multi_scale_reconstruction(self, smpl_verts, smpl_faces, rgb_video, normal_video, scales=[1, 2, 4]):
+        B, T, C, H, W = rgb_video.shape
         for scale in scales:
-            rgb_video_downsampled = F.interpolate(rgb_video, scale_factor=1/scale, mode='bilinear')
-            normal_video_downsampled = F.interpolate(normal_video, scale_factor=1/scale, mode='bilinear')
+            # Reshape to 4D for interpolation
+            rgb_video_reshaped = rgb_video.view(B * T, C, H, W)
+            normal_video_reshaped = normal_video.view(B * T, C, H, W)
+            
+            # Downsampling
+            rgb_video_downsampled = F.interpolate(rgb_video_reshaped, scale_factor=1/scale, mode='bilinear')
+            normal_video_downsampled = F.interpolate(normal_video_reshaped, scale_factor=1/scale, mode='bilinear')
+            
+            # Reshape back to 5D
+            _, _, new_H, new_W = rgb_video_downsampled.shape
+            rgb_video_downsampled = rgb_video_downsampled.view(B, T, C, new_H, new_W)
+            normal_video_downsampled = normal_video_downsampled.view(B, T, C, new_H, new_W)
             
             reconstructed_mesh = self.perform_reconstruction(smpl_verts, smpl_faces, rgb_video_downsampled, normal_video_downsampled)
             
