@@ -192,35 +192,9 @@ class Inference:
         )
         self.rgb_video = self.output.rgb_videos
         self.normal_video = self.output.normal_videos
-        
-    def optimize_smpl(self, nvs_data):
-        # SMPL-X forward
-        smpl_verts, smpl_joints_3d = self.smpl_estimator.smpl_forward(
-            optimed_betas=self.optimed_betas,
-            optimed_pose=self.optimed_pose,
-            optimed_trans=self.optimed_trans,
-            optimed_orient=self.optimed_orient,
-            expression=self.expression,
-            jaw_pose=self.jaw_pose,
-            left_hand_pose=self.left_hand_pose,
-            right_hand_pose=self.right_hand_pose,
-            scale=self.scale,
-        )
-        
-        # Differentiable rendering and loss calculation
-        self.smpl_renderer.load_mesh(smpl_verts, self.smpl_faces)
-        smpl_masks = self.smpl_renderer.render_mask(bg="black")
-        gt_masks = nvs_data["img_mask"].to(self.device)
-        
-        # Implement loss calculations (silhouette, normal, joint) here
-        self.calculate_losses(smpl_masks, gt_masks, smpl_verts, smpl_joints_3d, nvs_data)
-        
-        # Optimizer step
-        self.optimizer_smpl.zero_grad()
-        smpl_loss = self.calculate_total_loss()
-        smpl_loss.backward()
-        self.optimizer_smpl.step()
-        self.scheduler_smpl.step(smpl_loss)
+     
+
+
         
     def calculate_losses(self, smpl_masks, gt_masks, smpl_verts, smpl_joints_3d, nvs_data):
         # Silhouette loss
@@ -423,7 +397,8 @@ class Inference:
                 )
                 self.smpl_verts = reconstructed_mesh
             
-            self.update_nvs(final_iter)
+            with torch_gc_context():
+                self.update_nvs(final_iter)
         
         self.save_results()
         print(f"【End】{self.args.input_path}")
@@ -558,6 +533,13 @@ def timer():
     yield
     end_time = time.time()
     print(f"【Time】{end_time - start_time:.4f} s")
+
+@contextmanager
+def torch_gc_context():
+    try:
+        yield
+    finally:
+        torch.cuda.empty_cache()
 
 def parse_args():
     parser = argparse.ArgumentParser()
