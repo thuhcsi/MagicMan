@@ -41,16 +41,25 @@ class Inference:
         self.width, self.height = args.W, args.H
         self.weight_dtype = torch.float16 if config.weight_dtype == "fp16" else torch.float32
         
+        self.init_normalize()
+
+        
+        self.subject = os.path.basename(args.input_path).split('.')[0]
+        self.writer = SummaryWriter(f'./tbruns/{self.subject}')
+    
+    def init_modules_pipelines(self):
         self.init_modules()
         self.init_pipeline()
         self.init_camera()
         self.init_smpl()
         self.init_renderer()
         self.init_losses()
-        
-        self.subject = os.path.basename(args.input_path).split('.')[0]
-        self.writer = SummaryWriter(f'./tbruns/{self.subject}')
-        
+
+    def init_normalize(self):
+        self.normal_model = ModelManager.load_model(Config.CHECKPOINTS["1b"])
+        self.seg_model = ModelManager.load_model(Config.SEG_CHECKPOINTS["fg-bg-1b"], is_seg_model=True)
+
+
     def init_modules(self):
         config = self.config
         device = self.device
@@ -89,8 +98,7 @@ class Inference:
         self.normal_guider.load_state_dict(torch.load(os.path.join(ckpt_path, "normal_guider.pth"), map_location="cpu"))
         
 
-        self.normal_model = ModelManager.load_model(Config.CHECKPOINTS["1b"])
-        self.seg_model = ModelManager.load_model(Config.SEG_CHECKPOINTS["fg-bg-1b"], is_seg_model=True)
+
   
     def init_pipeline(self):
         self.pipe = MagicManPipeline(
@@ -368,7 +376,7 @@ class Inference:
         save_image_seq(self.cond_masks.unsqueeze(0).unsqueeze(0), os.path.join(output_path, "smplx_mask"))
 
     def run(self):
-        self.prepare_reference_image()
+        # self.prepare_reference_image()
         self.initialize_nvs()
         
         # Initialize SMPL-X parameters
@@ -570,6 +578,8 @@ def main():
     config = OmegaConf.load(args.config)
     
     inference = Inference(args, config)
+    inference.prepare_reference_image()
+    inference.init_modules_pipelines()
     inference.run()
 
 if __name__ == "__main__":
