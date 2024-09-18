@@ -154,7 +154,10 @@ class Inference:
         self.ref_rgb_pil.save(os.path.join(output_path, "ref_rgb.png"))
         self.ref_mask_pil.save(os.path.join(output_path, "ref_mask.png"))
         self.ref_normal_pil.save(os.path.join(output_path, "ref_normal.png"))
-        
+        del self.normal_model
+        del self.seg_model
+
+
     # use sapiens - normal  facebook https://about.meta.com/realitylabs/codecavatars/sapiens/
     def init_ref_normal(self, rgb_pil, mask_pil):
         processor = ImageProcessor()
