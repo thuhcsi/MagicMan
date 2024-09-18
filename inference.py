@@ -89,7 +89,7 @@ class Inference:
 
 
     def init_normalize(self):
-        self.processor = ImageProcessor()
+        self.processor = ImageProcessor(normal_model_name="0.3b",seg_model_name="fg-bg-1b")
 
 
     def init_modules(self):
@@ -595,7 +595,7 @@ def parse_args():
     parser.add_argument("-H", type=int, default=512)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cuda:0")
-    parser.add_argument("--input_path", type=str, default="examples/image_0.png")
+    parser.add_argument("--input_path", type=str, default="examples/image_0_2x.png")
     parser.add_argument("--output_path", type=str, default="examples/image_0")
     args = parser.parse_args()
 
