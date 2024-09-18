@@ -56,8 +56,7 @@ class Inference:
         self.init_losses()
 
     def init_normalize(self):
-        self.normal_model = ModelManager.load_model(Config.CHECKPOINTS["1b"])
-        self.seg_model = ModelManager.load_model(Config.SEG_CHECKPOINTS["fg-bg-1b"], is_seg_model=True)
+        self.processor = ImageProcessor()
 
 
     def init_modules(self):
@@ -154,19 +153,17 @@ class Inference:
         self.ref_rgb_pil.save(os.path.join(output_path, "ref_rgb.png"))
         self.ref_mask_pil.save(os.path.join(output_path, "ref_mask.png"))
         self.ref_normal_pil.save(os.path.join(output_path, "ref_normal.png"))
-        del self.normal_model
-        del self.seg_model
-
+ 
 
     # use sapiens - normal  facebook https://about.meta.com/realitylabs/codecavatars/sapiens/
     def init_ref_normal(self, rgb_pil, mask_pil):
-        processor = ImageProcessor()
-        normal_map = processor.process_image(
+        # processor = ImageProcessor()
+        normal_map = self.processor.process_image(
             self.args.input_path,
             normal_model_name="1b",
             seg_model_name="fg-bg-1b"  
         )
-        normal_map_vis = processor.visualize_normal_map(normal_map)
+        normal_map_vis = self.processor.visualize_normal_map(normal_map)
         return Image.fromarray(normal_map_vis)
 
     @staticmethod
@@ -292,15 +289,16 @@ class Inference:
             self.cond_normals, self.cond_masks = self.smpl_renderer.render_normal_screen_space(bg="black", return_mask=True)
             self.cond_semantics = self.smpl_renderer.render_semantic(bg="black")
         
-        processor = ImageProcessor()
+    
         cond_normal_list = []
         for cond_normal in self.cond_normals:
-            normal_map = processor.process_image(
-                Image.fromarray((cond_normal.detach().cpu().numpy() * 255).astype(np.uint8).transpose(1,2,0)),
+            img = Image.fromarray((cond_normal.detach().cpu().numpy() * 255).astype(np.uint8).transpose(1,2,0))
+            normal_map = self.processor.process_the_image(
+                img,
                 normal_model_name="1b",
                 seg_model_name="fg-bg-1b"
             )
-            normal_map_vis = processor.visualize_normal_map(normal_map)
+            normal_map_vis = self.processor.visualize_normal_map(normal_map)
             cond_normal_list.append(Image.fromarray(normal_map_vis))
         
         cond_semantic_list = [Image.fromarray((cond_semantic.detach().cpu().numpy() * 255).astype(np.uint8).transpose(1,2,0)) 
