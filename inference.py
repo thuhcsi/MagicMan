@@ -31,7 +31,11 @@ import cv2
 from FaceProcess import FaceProcessor
 from normalmap_vis import Config, ModelManager, ImageProcessor
 
-
+import gc
+import psutil
+import GPUtil
+import os
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
 class Inference:
     def __init__(self, args, config):
@@ -46,7 +50,25 @@ class Inference:
         
         self.subject = os.path.basename(args.input_path).split('.')[0]
         self.writer = SummaryWriter(f'./tbruns/{self.subject}')
-    
+
+    def log_memory_usage(self, step):
+        process = psutil.Process()
+        gpu = GPUtil.getGPUs()[0]
+        
+        cpu_memory = process.memory_info().rss / 1e9  # Convert to GB
+        gpu_memory = gpu.memoryUsed / 1e3  # Convert to GB
+        
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+        allocated = torch.cuda.memory_allocated() / 1e9  # Convert to GB
+        reserved = torch.cuda.memory_reserved() / 1e9  # Convert to GB
+        
+        print(f"Step {step} Memory Usage:")
+        print(f"  CPU Memory: {cpu_memory:.2f} GB")
+        print(f"  GPU Memory: {gpu_memory:.2f} GB")
+        print(f"  Torch Allocated: {allocated:.2f} GB")
+        print(f"  Torch Reserved: {reserved:.2f} GB")
+        
     def init_modules_pipelines(self):
         self.init_modules()
         self.init_pipeline()
@@ -54,6 +76,17 @@ class Inference:
         self.init_smpl()
         self.init_renderer()
         self.init_losses()
+
+        # Convert models to half precision
+        self.vae = self.vae.to(dtype=self.weight_dtype)
+        self.reference_unet = self.reference_unet.to(dtype=self.weight_dtype)
+        self.denoising_unet = self.denoising_unet.to(dtype=self.weight_dtype)
+        self.semantic_guider = self.semantic_guider.to(dtype=self.weight_dtype)
+        self.normal_guider = self.normal_guider.to(dtype=self.weight_dtype)
+
+        torch.backends.cuda.sdp_kernel(enable_flash=True, enable_math=False, enable_mem_efficient=True)
+
+
 
     def init_normalize(self):
         self.processor = ImageProcessor()
@@ -160,7 +193,7 @@ class Inference:
         # processor = ImageProcessor()
         normal_map = self.processor.process_image(
             self.args.input_path,
-            normal_model_name="1b",
+            normal_model_name="0.3b",
             seg_model_name="fg-bg-1b"  
         )
         normal_map_vis = self.processor.visualize_normal_map(normal_map)
@@ -269,7 +302,7 @@ class Inference:
             img = Image.fromarray((cond_normal.detach().cpu().numpy() * 255).astype(np.uint8).transpose(1,2,0))
             normal_map = self.processor.process_the_image(
                 img,
-                normal_model_name="1b",
+                normal_model_name="0.3b",
                 seg_model_name="fg-bg-1b"
             )
             normal_map_vis = self.processor.visualize_normal_map(normal_map)
@@ -352,10 +385,17 @@ class Inference:
 
     def run(self):
         # self.prepare_reference_image()
-        self.initialize_nvs()
+
         
         # Initialize SMPL-X parameters
         smpl_dict = self.smpl_estimator.estimate_smpl(self.ref_rgb_pil)
+        # del self.smpl_estimator
+
+        self.log_memory_usage("Initial")
+        self.initialize_nvs()
+        self.log_memory_usage("After NVS Init")
+
+        self.log_memory_usage("After SMPL Estimation")
         self.optimed_pose = smpl_dict["body_pose"].requires_grad_(True)
         self.optimed_trans = smpl_dict["trans"].requires_grad_(True)
         self.optimed_betas = smpl_dict["betas"].requires_grad_(True)
@@ -364,6 +404,7 @@ class Inference:
         self.optimizer_smpl = torch.optim.Adam([
             self.optimed_pose, self.optimed_trans, self.optimed_betas, self.optimed_orient
         ], lr=1e-2, amsgrad=True)
+        
         
         self.scheduler_smpl = torch.optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer_smpl,
@@ -387,8 +428,10 @@ class Inference:
             final_iter = iter == len(self.config.smplx_guidance_scales) - 1
             
             nvs_data = self.process_nvs_data()
+            self.log_memory_usage(f"Iteration {iter} - After NVS Data Processing")
             
             smpl_verts, smpl_joints_3d = self.adaptive_refinement(nvs_data)
+            self.log_memory_usage(f"Iteration {iter} - After Adaptive Refinement")
             
             if final_iter:
                 reconstructed_mesh = self.multi_scale_reconstruction(
@@ -396,11 +439,14 @@ class Inference:
                     scales=self.config.reconstruction_scales
                 )
                 self.smpl_verts = reconstructed_mesh
+                self.log_memory_usage(f"Iteration {iter} - After Multi-Scale Reconstruction")
             
             with torch_gc_context():
                 self.update_nvs(final_iter)
+                self.log_memory_usage(f"Iteration {iter} - After NVS Update")
         
         self.save_results()
+        self.log_memory_usage("Final")
         print(f"【End】{self.args.input_path}")
 
     def tensor2variable(self, tensor):

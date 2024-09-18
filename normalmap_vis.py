@@ -7,7 +7,7 @@ from torchvision import transforms
 
 class Config:
     SEG_CHECKPOINTS_DIR = '/media/oem/12TB/sapiens/pretrain/sapiens_lite_host/torchscript/seg/checkpoints/sapiens_1b/'  
-    CHECKPOINTS_DIR = '/media/oem/12TB/sapiens/pretrain/sapiens_lite_host/torchscript/normal/checkpoints/sapiens_1b/'
+    CHECKPOINTS_DIR = '/media/oem/12TB/sapiens/pretrain/sapiens_lite_host/torchscript/normal/checkpoints/sapiens_0.3b/'
 
     CHECKPOINTS = {
         "0.3b": "sapiens_0.3b_normal_render_people_epoch_66_torchscript.pt2",
@@ -42,15 +42,18 @@ class ModelManager:
         return torch.nn.functional.interpolate(output, size=(height, width), mode="bilinear", align_corners=False)
 
 class ImageProcessor:
-    def __init__(self):
+    def __init__(self,normal_model_name: str, seg_model_name: str):
         self.transform_fn = transforms.Compose([
             transforms.Resize((1024, 768)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[123.5/255, 116.5/255, 103.5/255], std=[58.5/255, 57.0/255, 57.5/255]),
         ])
-
-        self.normal_model = ModelManager.load_model(Config.CHECKPOINTS["1b"])
-        self.seg_model = ModelManager.load_model(Config.SEG_CHECKPOINTS["fg-bg-1b"], is_seg_model=True)
+        if normal_model_name == None:
+            normal_model_name = "1b"
+        if seg_model_name == None:
+            seg_model_name = "fg-bg-1b"
+        self.normal_model = ModelManager.load_model(Config.CHECKPOINTS[normal_model_name])
+        self.seg_model = ModelManager.load_model(Config.SEG_CHECKPOINTS[seg_model_name], is_seg_model=True)
 
     def process_image(self, image_path: str, normal_model_name: str, seg_model_name: str):
         image = Image.open(image_path).convert("RGB")
