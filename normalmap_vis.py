@@ -21,7 +21,7 @@ class Config:
 
 class ModelManager:
 
-    target_device = "cpu" #"cuda" if torch.cuda.is_available() else "cpu"
+    target_device = "cpu" #slower but more RAM access "cuda" if torch.cuda.is_available() else "cpu"
 
     @staticmethod
     def load_model(checkpoint_name: str, is_seg_model: bool = False):

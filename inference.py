@@ -230,12 +230,23 @@ class Inference:
 
         
     def calculate_losses(self, smpl_masks, gt_masks, smpl_verts, smpl_joints_3d, nvs_data):
+        # Ensure all masks have the same dimensions
+        target_size = gt_masks.shape[-2:]  # Use gt_masks size as the target
+        
+        if smpl_masks.shape[-2:] != target_size:
+            smpl_masks = F.interpolate(smpl_masks.unsqueeze(1).float(), size=target_size, mode='bilinear').squeeze(1)
+        
         # Silhouette loss
         diff_S = torch.abs(smpl_masks - gt_masks)
         self.losses["silhouette"]["value"] = diff_S.mean(dim=[1,2])
 
         # Self-occlusion detection
         _, smpl_masks_fake = self.smpl_renderer.render_normal_screen_space(bg="black", return_mask=True)
+        
+        # Ensure smpl_masks_fake has the same size as gt_masks
+        if smpl_masks_fake.shape[-2:] != target_size:
+            smpl_masks_fake = F.interpolate(smpl_masks_fake.unsqueeze(1).float(), size=target_size, mode='bilinear').squeeze(1)
+        
         body_overlap = (gt_masks * smpl_masks_fake).sum(dim=[1, 2]) / smpl_masks_fake.sum(dim=[1, 2])
         body_overlap_flag = body_overlap < cfg.body_overlap_thres
         self.losses["silhouette"]["weight"] = [0.1 if flag else 1.0 for flag in body_overlap_flag]
@@ -249,7 +260,17 @@ class Inference:
         if self.config.use_normal_loss:
             body_overlap_mask = gt_masks * smpl_masks_fake
             smpl_normals = self.smpl_renderer.render_normal(bg="black")
+            
+            # Ensure smpl_normals has the same size as gt_masks
+            if smpl_normals.shape[-2:] != target_size:
+                smpl_normals = F.interpolate(smpl_normals, size=target_size, mode='bilinear')
+            
             gt_normals = nvs_data["img_normal"].to(self.device)
+            
+            # Ensure gt_normals has the same size
+            if gt_normals.shape[-2:] != target_size:
+                gt_normals = F.interpolate(gt_normals, size=target_size, mode='bilinear')
+            
             diff_N = torch.abs(smpl_normals - gt_normals) * body_overlap_mask.unsqueeze(1)
             self.losses["normal"]["value"] = diff_N.mean(dim=[1,2,3])
             self.losses["normal"]["weight"] = [1.0 for _ in range(diff_N.shape[0])]
@@ -264,11 +285,8 @@ class Inference:
         diff_J = torch.norm(gt_lmks - smpl_lmks, dim=2) * gt_conf
         self.losses['joint']['value'] = diff_J.mean(dim=1)
 
-        # Add identity loss
-        if not hasattr(self, 'ref_embedding'):
-            self.ref_embedding = self.fp.extract_face_embedding(np.array(self.ref_rgb_pil))
-        
-        if self.ref_embedding is not None:
+        # Add identity loss (if implemented)
+        if hasattr(self, 'ref_embedding') and self.ref_embedding is not None:
             identity_loss = self.fp.identity_consistency_loss(self.rgb_video[0, :, 0], self.ref_embedding)
             self.losses['identity'] = {'value': torch.tensor(identity_loss, device=self.device), 'weight': self.config.identity_weight}
         else:
@@ -481,14 +499,21 @@ class Inference:
         return reconstructed_mesh
 
     def perform_reconstruction(self, smpl_verts, smpl_faces, rgb_video, normal_video):
-        features = torch.cat([rgb_video, normal_video], dim=1)
+        with torch.cuda.amp.autocast():  # Use mixed precision
+            features = torch.cat([rgb_video, normal_video], dim=1).to(self.device)
+            
+            if not hasattr(self, 'conv3d'):
+                self.conv3d = nn.Conv3d(features.shape[1], 32, kernel_size=3, padding=1).to(self.device)
+            
+            features = self.conv3d(features)
+            
+            projected_features = self.project_features_to_3d(features, smpl_verts)
+            
+            refined_verts = smpl_verts + projected_features
         
-        conv3d = nn.Conv3d(features.shape[1], 32, kernel_size=3, padding=1).to(self.device)
-        features = conv3d(features)
-        
-        projected_features = self.project_features_to_3d(features, smpl_verts)
-        
-        refined_verts = smpl_verts + projected_features
+        # Clear unnecessary variables
+        del features, projected_features
+        torch.cuda.empty_cache()
         
         return refined_verts
 
@@ -498,9 +523,21 @@ class Inference:
         
         features_flat = features.view(B, C, -1)
         
-        projected = features_flat.unsqueeze(2).repeat(1, 1, V, 1)
+        # Process in chunks to avoid OOM
+        chunk_size = 1000  # Adjust this value based on your available memory
+        num_chunks = (V + chunk_size - 1) // chunk_size
         
-        aggregated = projected.mean(dim=-1)
+        aggregated = []
+        for i in range(num_chunks):
+            start_idx = i * chunk_size
+            end_idx = min((i + 1) * chunk_size, V)
+            
+            chunk_projected = features_flat.unsqueeze(2).expand(-1, -1, end_idx - start_idx, -1)
+            chunk_aggregated = chunk_projected.mean(dim=-1)
+            
+            aggregated.append(chunk_aggregated)
+        
+        aggregated = torch.cat(aggregated, dim=2)
         
         return aggregated.permute(0, 2, 1)
 
@@ -537,18 +574,19 @@ class Inference:
         prev_loss = float('inf')
         
         for i in range(max_iterations):
-            print("i:",i)
-            smpl_verts, smpl_joints_3d = self.smpl_estimator.smpl_forward(
-                optimed_betas=self.optimed_betas,
-                optimed_pose=self.optimed_pose,
-                optimed_trans=self.optimed_trans,
-                optimed_orient=self.optimed_orient,
-                expression=self.expression,
-                jaw_pose=self.jaw_pose,
-                left_hand_pose=self.left_hand_pose,
-                right_hand_pose=self.right_hand_pose,
-                scale=self.scale,
-            )
+            print("i:", i)
+            with torch.no_grad():
+                smpl_verts, smpl_joints_3d = self.smpl_estimator.smpl_forward(
+                    optimed_betas=self.optimed_betas,
+                    optimed_pose=self.optimed_pose,
+                    optimed_trans=self.optimed_trans,
+                    optimed_orient=self.optimed_orient,
+                    expression=self.expression,
+                    jaw_pose=self.jaw_pose,
+                    left_hand_pose=self.left_hand_pose,
+                    right_hand_pose=self.right_hand_pose,
+                    scale=self.scale,
+                )
             
             self.smpl_renderer.load_mesh(smpl_verts, self.smpl_faces)
             smpl_masks = self.smpl_renderer.render_mask(bg="black")
@@ -571,6 +609,15 @@ class Inference:
 
             self.update_nvs()
 
+            # Cleanup
+            del smpl_masks, gt_masks, total_loss
+            torch.cuda.empty_cache()
+            gc.collect()
+
+        # Final cleanup
+        torch.cuda.empty_cache()
+        gc.collect()
+
         return smpl_verts, smpl_joints_3d
     
 
@@ -592,12 +639,12 @@ def parse_args():
     parser = argparse.ArgumentParser()
     
     parser.add_argument("--config", type=str, default="configs/inference/inference-plus.yaml")
-    parser.add_argument("-W", type=int, default=512)
-    parser.add_argument("-H", type=int, default=512)
+    parser.add_argument("-W", type=int, default=256)
+    parser.add_argument("-H", type=int, default=256)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--device", type=str, default="cuda:0")
-    parser.add_argument("--input_path", type=str, default="examples/image_0.png")
-    parser.add_argument("--output_path", type=str, default="examples/image_0")
+    parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--input_path", type=str, default="examples/001.jpg")
+    parser.add_argument("--output_path", type=str, default="examples/001")
     args = parser.parse_args()
 
     return args
