@@ -89,7 +89,7 @@ class Inference:
 
 
     def init_normalize(self):
-        self.processor = ImageProcessor(normal_model_name="0.3b",seg_model_name="fg-bg-1b")
+        self.processor = ImageProcessor(normal_model_name="1b",seg_model_name="fg-bg-1b")
 
 
     def init_modules(self):
@@ -429,7 +429,6 @@ class Inference:
             
             nvs_data = self.process_nvs_data()
             self.log_memory_usage(f"Iteration {iter} - After NVS Data Processing")
-            
             smpl_verts, smpl_joints_3d = self.adaptive_refinement(nvs_data)
             self.log_memory_usage(f"Iteration {iter} - After Adaptive Refinement")
             
@@ -534,9 +533,11 @@ class Inference:
     
 
     def adaptive_refinement(self, nvs_data, max_iterations=4, threshold=1e-4):
+        print("adaptive_refinement...")
         prev_loss = float('inf')
         
         for i in range(max_iterations):
+            print("i:",i)
             smpl_verts, smpl_joints_3d = self.smpl_estimator.smpl_forward(
                 optimed_betas=self.optimed_betas,
                 optimed_pose=self.optimed_pose,
@@ -595,7 +596,7 @@ def parse_args():
     parser.add_argument("-H", type=int, default=512)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cuda:0")
-    parser.add_argument("--input_path", type=str, default="examples/image_0_2x.png")
+    parser.add_argument("--input_path", type=str, default="examples/image_0.png")
     parser.add_argument("--output_path", type=str, default="examples/image_0")
     args = parser.parse_args()
 

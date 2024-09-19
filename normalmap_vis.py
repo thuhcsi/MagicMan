@@ -5,34 +5,35 @@ import numpy as np
 from PIL import Image
 from torchvision import transforms
 
-class Config:
-    SEG_CHECKPOINTS_DIR = '/media/oem/12TB/sapiens/pretrain/sapiens_lite_host/torchscript/seg/checkpoints/sapiens_1b/'  
-    CHECKPOINTS_DIR = '/media/oem/12TB/sapiens/pretrain/sapiens_lite_host/torchscript/normal/checkpoints/sapiens_0.3b/'
-
+class Config:  
+   
     CHECKPOINTS = {
-        "0.3b": "sapiens_0.3b_normal_render_people_epoch_66_torchscript.pt2",
-        "0.6b": "sapiens_0.6b_normal_render_people_epoch_200_torchscript.pt2",
-        "1b": "sapiens_1b_normal_render_people_epoch_115_torchscript.pt2",
-        "2b": "sapiens_2b_normal_render_people_epoch_70_torchscript.pt2",
+        "0.3b": "/media/oem/12TB/sapiens/pretrain/sapiens_lite_host/torchscript/normal/checkpoints/sapiens_0.3b/sapiens_0.3b_normal_render_people_epoch_66_torchscript.pt2",
+        "0.6b": "/media/oem/12TB/sapiens/pretrain/sapiens_lite_host/torchscript/normal/checkpoints/sapiens_0.6b/sapiens_0.6b_normal_render_people_epoch_200_torchscript.pt2",
+        "1b": "/media/oem/12TB/sapiens/pretrain/sapiens_lite_host/torchscript/normal/checkpoints/sapiens_1b/sapiens_1b_normal_render_people_epoch_115_torchscript.pt2",
+        "2b": "/media/oem/12TB/sapiens/pretrain/sapiens_lite_host/torchscript/normal/checkpoints/sapiens_2b/sapiens_2b_normal_render_people_epoch_70_torchscript.pt2",
     }
     SEG_CHECKPOINTS = {
-        "fg-bg-1b": "sapiens_1b_seg_foreground_epoch_8_torchscript.pt2",
+        "fg-bg-1b": "/media/oem/12TB/sapiens/pretrain/sapiens_lite_host/torchscript/seg/checkpoints/sapiens_1b/sapiens_1b_seg_foreground_epoch_8_torchscript.pt2",
         "no-bg-removal": None,
         "part-seg-1b": "sapiens_1b_goliath_best_goliath_mIoU_7994_epoch_151_torchscript.pt2",
     }
 
 class ModelManager:
+
+    target_device = "cpu" #"cuda" if torch.cuda.is_available() else "cpu"
+
     @staticmethod
     def load_model(checkpoint_name: str, is_seg_model: bool = False):
         if checkpoint_name is None:
             return None
         if is_seg_model:
-            checkpoint_path = os.path.join(Config.SEG_CHECKPOINTS_DIR, checkpoint_name)
+            checkpoint_path = checkpoint_name
         else:
-            checkpoint_path = os.path.join(Config.CHECKPOINTS_DIR, checkpoint_name)
+            checkpoint_path = checkpoint_name
         model = torch.jit.load(checkpoint_path)
         model.eval()
-        model.to("cuda")
+        model.to(ModelManager.target_device)
         return model
 
     @staticmethod
@@ -58,7 +59,7 @@ class ImageProcessor:
     def process_image(self, image_path: str, normal_model_name: str, seg_model_name: str):
         image = Image.open(image_path).convert("RGB")
         normal_model = ModelManager.load_model(Config.CHECKPOINTS[normal_model_name])
-        input_tensor = self.transform_fn(image).unsqueeze(0).to("cuda")
+        input_tensor = self.transform_fn(image).unsqueeze(0).to(ModelManager.target_device)
 
         normal_output = ModelManager.run_model(normal_model, input_tensor, image.height, image.width)
         normal_map = normal_output.squeeze().cpu().numpy().transpose(1, 2, 0)
@@ -74,16 +75,16 @@ class ImageProcessor:
     def process_the_image(self, image, normal_model_name: str, seg_model_name: str):
         # image = Image.open(image_path).convert("RGB")
         # normal_model = ModelManager.load_model(Config.CHECKPOINTS[normal_model_name])
-        input_tensor = self.transform_fn(image).unsqueeze(0).to("cuda")
+        input_tensor = self.transform_fn(image).unsqueeze(0).to(ModelManager.target_device)
 
         normal_output = ModelManager.run_model(self.normal_model, input_tensor, image.height, image.width)
         normal_map = normal_output.squeeze().cpu().numpy().transpose(1, 2, 0)
 
-        if seg_model_name != "no-bg-removal":
-            # seg_model = ModelManager.load_model(Config.SEG_CHECKPOINTS[seg_model_name], is_seg_model=True)
-            seg_output = ModelManager.run_model(self.seg_model, input_tensor, image.height, image.width)
-            seg_mask = (seg_output.argmax(dim=1) > 0).float().cpu().numpy()[0]
-            normal_map[seg_mask == 0] = np.nan
+        # if seg_model_name != "no-bg-removal":
+        #     # seg_model = ModelManager.load_model(Config.SEG_CHECKPOINTS[seg_model_name], is_seg_model=True)
+        #     seg_output = ModelManager.run_model(self.seg_model, input_tensor, image.height, image.width)
+        #     seg_mask = (seg_output.argmax(dim=1) > 0).float().cpu().numpy()[0]
+        #     normal_map[seg_mask == 0] = np.nan
 
         return normal_map
 
@@ -107,7 +108,7 @@ def main():
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
 
-    processor = ImageProcessor()
+    processor = ImageProcessor(normal_model_name="1b",seg_model_name="fg-bg-1b")
     normal_map = processor.process_image(args.input_image, args.normal_model, args.seg_model)
 
     # Save the normal map as .npy file
@@ -123,5 +124,5 @@ def main():
 if __name__ == "__main__":
     main()
 
-    # python normalmap_vis.py '/home/oem/Desktop/OLD/image_1.png' test.png test.pny
+    # python normalmap_vis.py '/home/oem/Desktop/OLD/image_1.png' test.png test
 
