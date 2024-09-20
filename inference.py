@@ -30,6 +30,7 @@ from scipy.spatial import Delaunay
 import cv2
 from FaceProcess import FaceProcessor
 from normalmap_vis import Config, ModelManager, ImageProcessor
+import numpy as np
 
 import gc
 import psutil
@@ -351,55 +352,27 @@ class Inference:
     def save_results(self):
         output_path = self.args.output_path
         
-        with torch.no_grad():
-            self.smpl_verts, _ = self.smpl_estimator.smpl_forward(
-                optimed_betas=self.optimed_betas,
-                optimed_pose=self.optimed_pose,
-                optimed_trans=self.optimed_trans,
-                optimed_orient=self.optimed_orient,
-                expression=self.expression,
-                jaw_pose=self.jaw_pose,
-                left_hand_pose=self.left_hand_pose,
-                right_hand_pose=self.right_hand_pose,
-                scale=self.scale,
-            )
-            self.smpl_renderer.load_mesh(self.smpl_verts, self.smpl_faces)
-            self.smpl_normals = self.smpl_renderer.render_normal(bg="black")
+        # Load the last saved intermediate results
+        last_iteration = len(self.config.smplx_guidance_scales) - 1
+        rgb_video = np.load(f"{output_path}/rgb_video_{last_iteration}.npy")
+        normal_video = np.load(f"{output_path}/normal_video_{last_iteration}.npy")
+        smpl_normals = np.load(f"{output_path}/cond_normals_{last_iteration}.npy")
 
         # Save video
         video_path = f"{output_path}/{self.subject}.mp4"
         save_optimed_video(
             video_path,
-            self.rgb_video,
-            self.normal_video,
-            self.smpl_normals.unsqueeze(0).permute(0,2,1,3,4),
+            rgb_video,
+            normal_video,
+            smpl_normals
         )
-
-        # Save SMPL parameters
-        smpl_param_path = f"{output_path}/smplx_refined.json"
-        save_optimed_smpl_param(
-            path=smpl_param_path,
-            betas=self.optimed_betas,
-            pose=self.optimed_pose,
-            orient=self.optimed_orient,
-            expression=self.expression,
-            jaw_pose=self.jaw_pose,
-            left_hand_pose=self.left_hand_pose,
-            right_hand_pose=self.right_hand_pose,
-            trans=self.optimed_trans,
-            scale=self.scale
-        )
-
-        # Save mesh
-        mesh_path = f"{output_path}/smplx_refined.obj"
-        save_optimed_mesh(mesh_path, self.smpl_verts, self.smpl_faces)
 
         # Save NVS images
-        save_image_seq(self.rgb_video, os.path.join(output_path, "rgb"))
-        save_image_seq(self.normal_video, os.path.join(output_path, "normal"))
-        save_image_seq(self.cond_normals.unsqueeze(0).permute(0,2,1,3,4), os.path.join(output_path, "smplx_normal"))
-        save_image_seq(self.cond_semantics.unsqueeze(0).permute(0,2,1,3,4), os.path.join(output_path, "smplx_semantic"))
-        save_image_seq(self.cond_masks.unsqueeze(0).unsqueeze(0), os.path.join(output_path, "smplx_mask"))
+        save_image_seq(rgb_video, os.path.join(output_path, "rgb"))
+        save_image_seq(normal_video, os.path.join(output_path, "normal"))
+        save_image_seq(smpl_normals, os.path.join(output_path, "smplx_normal"))
+        save_image_seq(np.load(f"{output_path}/cond_semantics_{last_iteration}.npy"), os.path.join(output_path, "smplx_semantic"))
+        save_image_seq(np.load(f"{output_path}/cond_masks_{last_iteration}.npy"), os.path.join(output_path, "smplx_mask"))
 
     def run(self):
         # self.prepare_reference_image()
@@ -407,7 +380,6 @@ class Inference:
         
         # Initialize SMPL-X parameters
         smpl_dict = self.smpl_estimator.estimate_smpl(self.ref_rgb_pil)
-        # del self.smpl_estimator
 
         self.log_memory_usage("Initial")
         self.initialize_nvs()
@@ -451,6 +423,8 @@ class Inference:
             self.log_memory_usage(f"Iteration {iter} - After Adaptive Refinement")
             
             if final_iter:
+                self.smpl_verts = smpl_verts 
+                self.save_intermediate_results(iter)
                 reconstructed_mesh = self.multi_scale_reconstruction(
                     smpl_verts, self.smpl_faces, self.rgb_video, self.normal_video,
                     scales=self.config.reconstruction_scales
@@ -460,12 +434,39 @@ class Inference:
             
             with torch_gc_context():
                 self.update_nvs(final_iter)
+                self.save_intermediate_results(iter)
+
                 self.log_memory_usage(f"Iteration {iter} - After NVS Update")
         
-        self.save_results()
+        self.save_final_results()
         self.log_memory_usage("Final")
         print(f"【End】{self.args.input_path}")
 
+
+    def save_final_results(self):
+        output_path = self.args.output_path
+        
+        # Save SMPL parameters
+        smpl_param_path = f"{output_path}/smplx_refined.json"
+        save_optimed_smpl_param(
+            path=smpl_param_path,
+            betas=self.optimed_betas,
+            pose=self.optimed_pose,
+            orient=self.optimed_orient,
+            expression=self.expression,
+            jaw_pose=self.jaw_pose,
+            left_hand_pose=self.left_hand_pose,
+            right_hand_pose=self.right_hand_pose,
+            trans=self.optimed_trans,
+            scale=self.scale
+        )
+
+        # Save mesh
+        mesh_path = f"{output_path}/smplx_refined.obj"
+        save_optimed_mesh(mesh_path, self.smpl_verts, self.smpl_faces)
+
+        print(f"Final results saved to {output_path}")
+        
     def tensor2variable(self, tensor):
         return tensor.requires_grad_(True).to(self.device)
 
@@ -476,9 +477,11 @@ class Inference:
         )
 
 
-    def multi_scale_reconstruction(self, smpl_verts, smpl_faces, rgb_video, normal_video, scales=[1, 2, 4]):
+    def multi_scale_reconstruction(self, smpl_verts, smpl_faces, rgb_video, normal_video, scales=[1]):
+        print(f"multi_scale_reconstruction: Initial shapes - smpl_verts: {smpl_verts.shape}, rgb_video: {rgb_video.shape}, normal_video: {normal_video.shape}")
         B, T, C, H, W = rgb_video.shape
         for scale in scales:
+            print(f"Processing scale: {scale}")
             # Reshape to 4D for interpolation
             rgb_video_reshaped = rgb_video.view(B * T, C, H, W)
             normal_video_reshaped = normal_video.view(B * T, C, H, W)
@@ -492,40 +495,71 @@ class Inference:
             rgb_video_downsampled = rgb_video_downsampled.view(B, T, C, new_H, new_W)
             normal_video_downsampled = normal_video_downsampled.view(B, T, C, new_H, new_W)
             
+            print(f"Downsampled shapes - rgb: {rgb_video_downsampled.shape}, normal: {normal_video_downsampled.shape}")
+            
             reconstructed_mesh = self.perform_reconstruction(smpl_verts, smpl_faces, rgb_video_downsampled, normal_video_downsampled)
+            print(f"Reconstructed mesh shape: {reconstructed_mesh.shape}")
             
             smpl_verts = self.upsample_mesh(reconstructed_mesh, scale)
+            print(f"Upsampled mesh shape: {smpl_verts.shape}")
         
         return reconstructed_mesh
 
+
+    def save_intermediate_results(self, iteration):
+        print("save_intermediate_results:")
+        output_path = self.args.output_path
+        np.save(f"{output_path}/smpl_verts_{iteration}.npy", self.smpl_verts.detach().cpu().numpy())
+        np.save(f"{output_path}/rgb_video_{iteration}.npy", self.rgb_video.detach().cpu().numpy())
+        np.save(f"{output_path}/normal_video_{iteration}.npy", self.normal_video.detach().cpu().numpy())
+        np.save(f"{output_path}/cond_normals_{iteration}.npy", self.cond_normals.detach().cpu().numpy())
+        np.save(f"{output_path}/cond_semantics_{iteration}.npy", self.cond_semantics.detach().cpu().numpy())
+        np.save(f"{output_path}/cond_masks_{iteration}.npy", self.cond_masks.detach().cpu().numpy())
+        
     def perform_reconstruction(self, smpl_verts, smpl_faces, rgb_video, normal_video):
-        with torch.cuda.amp.autocast():  # Use mixed precision
+        print(f"perform_reconstruction: Input shapes - smpl_verts: {smpl_verts.shape}, rgb_video: {rgb_video.shape}, normal_video: {normal_video.shape}")
+        
+        with torch.amp.autocast(device_type='cuda', dtype=torch.float16):  # Use mixed precision
             features = torch.cat([rgb_video, normal_video], dim=1).to(self.device)
+            print(f"Concatenated features shape: {features.shape}")
             
             if not hasattr(self, 'conv3d'):
                 self.conv3d = nn.Conv3d(features.shape[1], 32, kernel_size=3, padding=1).to(self.device)
             
             features = self.conv3d(features)
+            print(f"Features after Conv3D shape: {features.shape}")
             
             projected_features = self.project_features_to_3d(features, smpl_verts)
+            print(f"Projected features shape: {projected_features.shape}")
             
-            refined_verts = smpl_verts + projected_features
-        
+            # Add a linear layer to reduce the feature dimensions from 32 to 3
+            if not hasattr(self, 'feature_reducer'):
+                self.feature_reducer = nn.Linear(32, 3).to(self.device)
+            
+            reduced_features = self.feature_reducer(projected_features)
+            print(f"Reduced features shape: {reduced_features.shape}")
+            
+            refined_verts = smpl_verts + reduced_features
+            print(f"Refined verts shape: {refined_verts.shape}")
+
         # Clear unnecessary variables
-        del features, projected_features
-        torch.cuda.empty_cache()
+        # del features, projected_features, reduced_features
+        # torch.cuda.empty_cache()
         
         return refined_verts
 
     def project_features_to_3d(self, features, smpl_verts):
         B, C, D, H, W = features.shape
         V = smpl_verts.shape[1]
+        print(f"project_features_to_3d: Input shapes - features: {features.shape}, smpl_verts: {smpl_verts.shape}")
         
         features_flat = features.view(B, C, -1)
+        print(f"Flattened features shape: {features_flat.shape}")
         
         # Process in chunks to avoid OOM
         chunk_size = 1000  # Adjust this value based on your available memory
         num_chunks = (V + chunk_size - 1) // chunk_size
+        print(f"Processing in {num_chunks} chunks of size {chunk_size}")
         
         aggregated = []
         for i in range(num_chunks):
@@ -533,13 +567,19 @@ class Inference:
             end_idx = min((i + 1) * chunk_size, V)
             
             chunk_projected = features_flat.unsqueeze(2).expand(-1, -1, end_idx - start_idx, -1)
+            print(f"Chunk {i+1}/{num_chunks} projected shape: {chunk_projected.shape}")
+            
             chunk_aggregated = chunk_projected.mean(dim=-1)
+            print(f"Chunk {i+1}/{num_chunks} aggregated shape: {chunk_aggregated.shape}")
             
             aggregated.append(chunk_aggregated)
         
         aggregated = torch.cat(aggregated, dim=2)
+        print(f"Final aggregated shape: {aggregated.shape}")
         
-        return aggregated.permute(0, 2, 1)
+        result = aggregated.permute(0, 2, 1)
+        print(f"Final result shape: {result.shape}")
+        return result  # Shape: (B, V, C)
 
     def upsample_mesh(self, verts, scale):
         verts_np = verts.detach().cpu().numpy()
@@ -639,12 +679,12 @@ def parse_args():
     parser = argparse.ArgumentParser()
     
     parser.add_argument("--config", type=str, default="configs/inference/inference-plus.yaml")
-    parser.add_argument("-W", type=int, default=256)
-    parser.add_argument("-H", type=int, default=256)
+    parser.add_argument("-W", type=int, default=512)
+    parser.add_argument("-H", type=int, default=512)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--input_path", type=str, default="examples/001.jpg")
-    parser.add_argument("--output_path", type=str, default="examples/001")
+    parser.add_argument("--input_path", type=str, default="examples/ref_rgb.png")
+    parser.add_argument("--output_path", type=str, default="examples/image_0")
     args = parser.parse_args()
 
     return args
@@ -658,6 +698,12 @@ def main():
     inference.prepare_reference_image()
     inference.init_modules_pipelines()
     inference.run()
+
+    try:
+        inference.save_results()
+    except Exception as e:
+        print(f"Error occurred while saving results: {e}")
+        print("You can try to run the save_results method separately later.")
 
 if __name__ == "__main__":
     main()
