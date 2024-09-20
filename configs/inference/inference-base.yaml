@@ -77,3 +77,17 @@ final_denoising_steps: 25
 use_normal_loss: false # false for faster inference
             
 
+# Multi-scale reconstruction
+reconstruction_scales: [1, 2, 4]
+
+# Adaptive refinement
+max_refinement_iterations: 4
+refinement_threshold: 1e-4
+
+# Identity loss
+identity_weight: 10.0
+
+# Loss weights
+silhouette_weight: 1.0
+joint_weight: 5.0
+normal_weight: 1.0

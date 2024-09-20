@@ -337,6 +337,10 @@ class MagicManPipeline(DiffusionPipeline):
         height = height or self.unet.config.sample_size * self.vae_scale_factor
         width = width or self.unet.config.sample_size * self.vae_scale_factor
 
+
+        self.reference_unet.enable_gradient_checkpointing()
+        self.denoising_unet.enable_gradient_checkpointing()
+
         device = self._execution_device
 
         do_classifier_free_guidance = guidance_scale > 1.0
